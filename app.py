@@ -6,6 +6,8 @@ import sqlite3
 from dotenv import load_dotenv
 from datetime import datetime
 import logging
+import requests # ADDED: Import the requests library for API calls
+import json # ADDED: Import json for handling API responses
 
 # Configure basic logging for Flask app
 logging.basicConfig(level=logging.INFO)
@@ -38,9 +40,8 @@ def init_db():
     file on each startup to ensure a clean schema.
     """
     try:
-        # --- NEW: Force delete the database file if it exists to ensure a clean slate ---
         # This is aggressive and means data will be lost on every deploy/restart.
-        # For production, you'd use a persistent external database.
+        # For production, you'd use a persistent external database like PostgreSQL.
         if os.path.exists(DATABASE_PATH):
             os.remove(DATABASE_PATH)
             app.logger.info(f"🗑️ Deleted existing database file: {DATABASE_PATH}")
@@ -48,7 +49,6 @@ def init_db():
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
 
-            # Removed IF NOT EXISTS here because we are explicitly deleting the file first
             cursor.execute('''
                 CREATE TABLE consultations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,50 +70,77 @@ def init_db():
 # Initialize database on app startup
 init_db()
 
+# --- Gemini API Integration ---
+# The API key will be injected by the Canvas environment
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '') # Empty string for Canvas injection
+GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+
 def diagnose(symptoms):
     """
-    Enhanced diagnosis logic with symptom scoring.
-    In a real application, this would be replaced by a more sophisticated
-    AI model (e.g., an LLM or a machine learning model trained on medical data).
+    Diagnoses symptoms using the Gemini LLM.
+    Provides a disclaimer that it's not medical advice.
     """
-    symptoms_lower = symptoms.lower()
+    app.logger.info(f"Calling Gemini API for diagnosis with symptoms: '{symptoms}'")
 
-    conditions = {
-        "flu": {
-            "keywords": ["fever", "headache", "body ache", "chills"],
-            "response": "🤒 Likely Influenza (85% match)\n• Rest and fluids\n• Antivirals if <48hrs\n• Contagious 7 days"
-        },
-        "cold": {
-            "keywords": ["cough", "sore throat", "runny nose"],
-            "response": "🤧 Likely Common Cold (75% match)\n• OTC cold medicine\n• Rest\n• Contagious 10 days"
-        },
-        "allergy": {
-            "keywords": ["sneezing", "itchy eyes", "runny nose", "congestion"],
-            "response": "🤧 Likely Allergies (70% match)\n• Antihistamines\n• Avoid triggers\n• Not contagious"
-        },
-        "stomach bug": {
-            "keywords": ["nausea", "vomiting", "diarrhea", "stomach ache"],
-            "response": "🤢 Likely Stomach Bug (Gastroenteritis) (80% match)\n• Hydrate with electrolytes\n• Bland diet\n• Rest"
+    prompt = f"""
+    You are an AI assistant designed to provide general information about symptoms.
+    You are NOT a medical doctor and cannot give medical advice.
+    Always include a clear disclaimer at the beginning and end of your response stating this.
+
+    Based on the following symptoms, provide a brief, general explanation of what they might indicate,
+    and suggest common next steps (e.g., rest, hydration, or when to see a doctor).
+    Keep the response concise and suitable for a WhatsApp message (under 160 characters if possible, but prioritize clarity).
+
+    Symptoms: {symptoms}
+    """
+
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.7,
+            "topP": 0.95,
+            "topK": 40,
+            "maxOutputTokens": 200 # Limit output length for WhatsApp
         }
     }
 
-    # Find best matching condition
-    best_match_response = "🩺 Please consult a doctor for evaluation. Your symptoms are complex or don't match common conditions."
-    highest_score = 0
-    best_match_diagnosis_name = "Undetermined"
+    try:
+        response = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload))
+        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        result = response.json()
 
-    for condition_name, data in conditions.items():
-        match_score = sum(1 for keyword in data["keywords"] if keyword in symptoms_lower)
-        if match_score > highest_score:
-            highest_score = match_score
-            best_match_response = data["response"]
-            best_match_diagnosis_name = condition_name
+        if result and result.get('candidates') and result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts'):
+            diagnosis_text = result['candidates'][0]['content']['parts'][0]['text']
+            # Add a clear disclaimer at the beginning of the response
+            final_response = (
+                "⚠️ Disclaimer: I am an AI and cannot provide medical advice. Consult a doctor for health concerns.\n\n"
+                f"{diagnosis_text}\n\n"
+                "Remember to consult a healthcare professional for diagnosis and treatment."
+            )
+            return "LLM Diagnosis", final_response
+        else:
+            app.logger.error(f"Gemini API response structure unexpected: {result}")
+            return "LLM Error", "⚠️ AI diagnosis unavailable. Please try again or consult a doctor."
 
-    # Only return a specific diagnosis if at least two keywords match
-    if highest_score >= 2:
-        return best_match_diagnosis_name, best_match_response
-    else:
-        return best_match_diagnosis_name, "🩺 Please consult a doctor for evaluation. Your symptoms are complex or don't match common conditions."
+    except requests.exceptions.HTTPError as errh:
+        app.logger.error(f"HTTP Error: {errh}", exc_info=True)
+        return "LLM Error", "⚠️ AI diagnosis currently unavailable due to a network issue. Please try again later."
+    except requests.exceptions.ConnectionError as errc:
+        app.logger.error(f"Error Connecting: {errc}", exc_info=True)
+        return "LLM Error", "⚠️ AI diagnosis currently unavailable due to a connection issue. Please try again later."
+    except requests.exceptions.Timeout as errt:
+        app.logger.error(f"Timeout Error: {errt}", exc_info=True)
+        return "LLM Error", "⚠️ AI diagnosis currently unavailable due to a timeout. Please try again later."
+    except requests.exceptions.RequestException as err:
+        app.logger.error(f"General Request Error: {err}", exc_info=True)
+        return "LLM Error", "⚠️ AI diagnosis currently unavailable due to an unexpected error. Please try again later."
+    except json.JSONDecodeError as e:
+        app.logger.error(f"JSON Decode Error: {e} - Response: {response.text}", exc_info=True)
+        return "LLM Error", "⚠️ AI diagnosis unavailable due to a response formatting issue. Please try again."
+    except Exception as e:
+        app.logger.error(f"Unexpected error during Gemini API call: {e}", exc_info=True)
+        return "LLM Error", "⚠️ An unexpected AI error occurred. Please try again."
 
 
 def save_to_db(phone, symptoms, diagnosis, response, patient_name="Unknown"):
@@ -169,7 +196,7 @@ def whatsapp_reply():
             response_text = "⚠️ Could not retrieve history due to a database error."
             app.logger.error(f"History retrieval Error: {e}", exc_info=True)
     else:
-        # Get diagnosis
+        # Get diagnosis from LLM
         diagnosis_name, diagnosis_response = diagnose(incoming_msg)
         response_text = f"AI Doctor Report:\n\nSymptoms: {incoming_msg}\nDiagnosis: {diagnosis_response}"
 

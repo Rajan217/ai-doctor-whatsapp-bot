@@ -1,0 +1,4 @@
+flask==2.3.2
+twilio==8.0.0
+pandas==1.5.3
+jupyter==1.0.0

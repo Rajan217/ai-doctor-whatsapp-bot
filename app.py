@@ -5,48 +5,42 @@ import os
 import sqlite3
 from dotenv import load_dotenv
 from datetime import datetime
-import logging # ADDED: Import logging module
+import logging
 
 # Configure basic logging for Flask app
-# This helps capture errors in Render logs more clearly
-logging.basicConfig(level=logging.INFO) # Set to INFO for general messages, DEBUG for more verbosity
+logging.basicConfig(level=logging.INFO)
 
 # --- Explicitly load environment variables from .env file in the script's directory ---
-# This helps ensure the .env file is found regardless of the current working directory
 dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(dotenv_path)
 
 app = Flask(__name__)
 
 # --- IMPORTANT: Use environment variables for sensitive data ---
-# Initialize Twilio client using environment variables
-# Ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are set in your .env file
 try:
-    # --- FIX: Pass the NAMES of the environment variables, not the values ---
     TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
     TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         raise ValueError("Twilio Account SID or Auth Token not found in environment variables.")
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 except ValueError as e:
-    app.logger.error(f"❌ Twilio Client Initialization Error: {e}") # Use app.logger
-    app.logger.error("Please ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are set in your .env file.") # Use app.logger
-    client = None # Set client to None to prevent further errors if credentials are missing
+    app.logger.error(f"❌ Twilio Client Initialization Error: {e}")
+    app.logger.error("Please ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are set in your .env file.")
+    client = None
 
 # --- Database setup ---
-# Use an environment variable for the database path for better flexibility
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'medical.db') # Default to medical.db if not set
+DATABASE_PATH = os.getenv('DATABASE_PATH', 'medical.db')
 
 def init_db():
     """
     Initializes the SQLite database, creating the consultations table
-    and adding the patient_name column if they don't exist.
+    with all necessary columns if it doesn't exist.
     """
     try:
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
 
-            # Create the consultations table if it doesn't exist
+            # --- FIX: Include patient_name directly in CREATE TABLE statement ---
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS consultations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,27 +48,28 @@ def init_db():
                     symptoms TEXT NOT NULL,
                     diagnosis TEXT,
                     response TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    patient_name TEXT DEFAULT 'Unknown' -- patient_name is now part of initial creation
                 )
             ''')
-            app.logger.info("✅ 'consultations' table checked/created.") # Use app.logger
+            app.logger.info("✅ 'consultations' table checked/created.")
 
-            # Add the patient_name column if it doesn't exist
-            try:
-                cursor.execute("ALTER TABLE consultations ADD COLUMN patient_name TEXT DEFAULT 'Unknown'")
-                app.logger.info("✅ Added 'patient_name' column to 'consultations' table.") # Use app.logger
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" in str(e).lower():
-                    app.logger.info("ℹ️ 'patient_name' column already exists. Skipping addition.") # Use app.logger
-                else:
-                    raise # Re-raise other unexpected operational errors
+            # --- REMOVED: No longer need the ALTER TABLE for patient_name ---
+            # The patient_name column is now part of the initial CREATE TABLE statement,
+            # so this separate ALTER TABLE is no longer necessary.
+            # try:
+            #     cursor.execute("ALTER TABLE consultations ADD COLUMN patient_name TEXT DEFAULT 'Unknown'")
+            #     app.logger.info("✅ Added 'patient_name' column to 'consultations' table.")
+            # except sqlite3.OperationalError as e:
+            #     if "duplicate column name" in str(e).lower():
+            #         app.logger.info("ℹ️ 'patient_name' column already exists. Skipping addition.")
+            #     else:
+            #         raise
 
             conn.commit()
-            app.logger.info("✅ Database initialization complete.") # Use app.logger
+            app.logger.info("✅ Database initialization complete.")
     except sqlite3.Error as e:
-        app.logger.error(f"❌ Database initialization failed: {e}", exc_info=True) # Log full traceback
-        # Note: If init_db fails, subsequent DB operations will also fail.
-        # Consider a more robust error handling for app startup if this is critical.
+        app.logger.error(f"❌ Database initialization failed: {e}", exc_info=True)
 
 # Initialize database on app startup
 init_db()
@@ -134,10 +129,10 @@ def save_to_db(phone, symptoms, diagnosis, response, patient_name="Unknown"):
                             VALUES (?, ?, ?, ?, ?)''',
                            (phone, symptoms, diagnosis, response, patient_name))
             last_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
-            app.logger.info(f"💾 Saved consultation ID: {last_id}") # Use app.logger
+            app.logger.info(f"💾 Saved consultation ID: {last_id}")
             return True
     except sqlite3.Error as e:
-        app.logger.error(f"❌ Database Error during save: {e}", exc_info=True) # Log full traceback
+        app.logger.error(f"❌ Database Error during save: {e}", exc_info=True)
         return False
 
 @app.route("/whatsapp", methods=["POST"])
@@ -146,14 +141,14 @@ def whatsapp_reply():
     phone = request.values.get('From', '')
     incoming_msg = request.values.get('Body', '').strip()
 
-    app.logger.info(f"\n=== INCOMING MESSAGE ===") # Use app.logger
-    app.logger.info(f"From: {phone}") # Use app.logger
-    app.logger.info(f"Content: '{incoming_msg}'") # Use app.logger
+    app.logger.info(f"\n=== INCOMING MESSAGE ===")
+    app.logger.info(f"From: {phone}")
+    app.logger.info(f"Content: '{incoming_msg}'")
 
     # Prepare response
     resp = MessagingResponse()
-    response_text = "" # Initialize response_text
-    diagnosis_name = None # Initialize diagnosis_name
+    response_text = ""
+    diagnosis_name = None
 
     if not incoming_msg:
         response_text = "Please describe your symptoms (e.g., 'headache and fever')."
@@ -176,18 +171,16 @@ def whatsapp_reply():
                     response_text = "No history found for this number."
         except sqlite3.Error as e:
             response_text = "⚠️ Could not retrieve history due to a database error."
-            app.logger.error(f"History retrieval Error: {e}", exc_info=True) # Log full traceback
+            app.logger.error(f"History retrieval Error: {e}", exc_info=True)
     else:
         # Get diagnosis
         diagnosis_name, diagnosis_response = diagnose(incoming_msg)
         response_text = f"AI Doctor Report:\n\nSymptoms: {incoming_msg}\nDiagnosis: {diagnosis_response}"
 
     # Determine patient_name (you might want to add a way for users to set this)
-    # For now, it defaults to 'Unknown' or can be extracted from a future command
-    patient_name_for_save = "Unknown" # Placeholder, implement logic to get patient name if needed
+    patient_name_for_save = "Unknown"
 
     # Save to database and send response
-    # Pass diagnosis_name to save_to_db, which will be None if not diagnosed
     if save_to_db(phone, incoming_msg, diagnosis_name, response_text, patient_name_for_save):
         resp.message(response_text)
     else:
@@ -196,7 +189,6 @@ def whatsapp_reply():
     return str(resp)
 
 if __name__ == "__main__":
-    # The 'r' prefix makes this a raw string, preventing SyntaxWarning for backslashes
     print(r"""
     _____ _    ___        __  ___          
    / ___/(_) / (_)____/ /_/   |  ________ 
@@ -205,5 +197,4 @@ if __name__ == "__main__":
 /____/_/_/_/_/____/\__/_/   |_/____/\___/ 
                                             
 AI Doctor System Ready!""")
-    # Set debug=False for production environments
     app.run(host='0.0.0.0', port=5000, debug=True)

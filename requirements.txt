@@ -1,3 +1,2 @@
 Flask
 twilio
-pandas==2.2.2  # <--- CHANGED to a recent stable version

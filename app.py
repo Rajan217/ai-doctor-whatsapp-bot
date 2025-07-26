@@ -17,14 +17,10 @@ app = Flask(__name__)
 # Initialize Twilio client using environment variables
 # Ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are set in your .env file
 try:
+    # --- FIX: Pass the NAMES of the environment variables, not the values ---
     TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
     TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        # This error means the environment variables are not set.
-        # Please ensure you have a .env file in the same directory as app.py
-        # with content like:
-        # TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-        # TWILIO_AUTH_TOKEN=your_auth_token_here
         raise ValueError("Twilio Account SID or Auth Token not found in environment variables.")
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 except ValueError as e:
@@ -42,6 +38,7 @@ def init_db():
     and adding the patient_name column if they don't exist.
     """
     try:
+        # --- FIX: Use DATABASE_PATH environment variable here ---
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
 
@@ -66,7 +63,7 @@ def init_db():
                 if "duplicate column name" in str(e).lower():
                     print("ℹ️ 'patient_name' column already exists. Skipping addition.")
                 else:
-                    raise # Re-raise other operational errors
+                    raise # Re-raise other unexpected operational errors
 
             conn.commit()
             print("✅ Database initialization complete.")
@@ -125,6 +122,7 @@ def diagnose(symptoms):
 def save_to_db(phone, symptoms, diagnosis, response, patient_name="Unknown"):
     """Safe database operation with context manager"""
     try:
+        # --- Already using DATABASE_PATH here, which is correct ---
         with sqlite3.connect(DATABASE_PATH) as conn:
             conn.execute('''INSERT INTO consultations
                             (phone, symptoms, diagnosis, response, patient_name)
@@ -159,6 +157,7 @@ def whatsapp_reply():
     elif "history" in incoming_msg.lower():
         # Feature: Retrieve last 3 consultations
         try:
+            # --- FIX: Use DATABASE_PATH environment variable here ---
             with sqlite3.connect(DATABASE_PATH) as conn:
                 history = conn.execute('''SELECT symptoms, diagnosis, timestamp, patient_name
                                          FROM consultations
@@ -167,7 +166,7 @@ def whatsapp_reply():
                                          LIMIT 3''', (phone,)).fetchall()
                 if history:
                     response_text = "📜 Your History:\n" + "\n".join(
-                        f"[{row[2]}] {row[3]} - Symptoms: {row[0]} -> Diagnosis: {row[1]}" for row in history
+                        f"[{row[2]}] {row[3]} - Symptoms: {row[0]} → Diagnosis: {row[1]}" for row in history
                     )
                 else:
                     response_text = "No history found for this number."

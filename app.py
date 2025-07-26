@@ -34,37 +34,33 @@ DATABASE_PATH = os.getenv('DATABASE_PATH', 'medical.db')
 def init_db():
     """
     Initializes the SQLite database, creating the consultations table
-    with all necessary columns if it doesn't exist.
+    with all necessary columns. It forces a recreation of the database
+    file on each startup to ensure a clean schema.
     """
     try:
+        # --- NEW: Force delete the database file if it exists to ensure a clean slate ---
+        # This is aggressive and means data will be lost on every deploy/restart.
+        # For production, you'd use a persistent external database.
+        if os.path.exists(DATABASE_PATH):
+            os.remove(DATABASE_PATH)
+            app.logger.info(f"🗑️ Deleted existing database file: {DATABASE_PATH}")
+
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
 
-            # --- FIX: Include patient_name directly in CREATE TABLE statement ---
+            # Removed IF NOT EXISTS here because we are explicitly deleting the file first
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS consultations (
+                CREATE TABLE consultations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     phone TEXT NOT NULL,
                     symptoms TEXT NOT NULL,
                     diagnosis TEXT,
                     response TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    patient_name TEXT DEFAULT 'Unknown' -- patient_name is now part of initial creation
+                    patient_name TEXT DEFAULT 'Unknown'
                 )
             ''')
-            app.logger.info("✅ 'consultations' table checked/created.")
-
-            # --- REMOVED: No longer need the ALTER TABLE for patient_name ---
-            # The patient_name column is now part of the initial CREATE TABLE statement,
-            # so this separate ALTER TABLE is no longer necessary.
-            # try:
-            #     cursor.execute("ALTER TABLE consultations ADD COLUMN patient_name TEXT DEFAULT 'Unknown'")
-            #     app.logger.info("✅ Added 'patient_name' column to 'consultations' table.")
-            # except sqlite3.OperationalError as e:
-            #     if "duplicate column name" in str(e).lower():
-            #         app.logger.info("ℹ️ 'patient_name' column already exists. Skipping addition.")
-            #     else:
-            #         raise
+            app.logger.info("✅ 'consultations' table created.")
 
             conn.commit()
             app.logger.info("✅ Database initialization complete.")

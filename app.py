@@ -5,6 +5,11 @@ import os
 import sqlite3
 from dotenv import load_dotenv
 from datetime import datetime
+import logging # ADDED: Import logging module
+
+# Configure basic logging for Flask app
+# This helps capture errors in Render logs more clearly
+logging.basicConfig(level=logging.INFO) # Set to INFO for general messages, DEBUG for more verbosity
 
 # --- Explicitly load environment variables from .env file in the script's directory ---
 # This helps ensure the .env file is found regardless of the current working directory
@@ -24,8 +29,8 @@ try:
         raise ValueError("Twilio Account SID or Auth Token not found in environment variables.")
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 except ValueError as e:
-    print(f"❌ Twilio Client Initialization Error: {e}")
-    print("Please ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are set in your .env file.")
+    app.logger.error(f"❌ Twilio Client Initialization Error: {e}") # Use app.logger
+    app.logger.error("Please ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are set in your .env file.") # Use app.logger
     client = None # Set client to None to prevent further errors if credentials are missing
 
 # --- Database setup ---
@@ -38,7 +43,6 @@ def init_db():
     and adding the patient_name column if they don't exist.
     """
     try:
-        # --- FIX: Use DATABASE_PATH environment variable here ---
         with sqlite3.connect(DATABASE_PATH) as conn:
             cursor = conn.cursor()
 
@@ -53,22 +57,24 @@ def init_db():
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            print("✅ 'consultations' table checked/created.")
+            app.logger.info("✅ 'consultations' table checked/created.") # Use app.logger
 
             # Add the patient_name column if it doesn't exist
             try:
                 cursor.execute("ALTER TABLE consultations ADD COLUMN patient_name TEXT DEFAULT 'Unknown'")
-                print("✅ Added 'patient_name' column to 'consultations' table.")
+                app.logger.info("✅ Added 'patient_name' column to 'consultations' table.") # Use app.logger
             except sqlite3.OperationalError as e:
                 if "duplicate column name" in str(e).lower():
-                    print("ℹ️ 'patient_name' column already exists. Skipping addition.")
+                    app.logger.info("ℹ️ 'patient_name' column already exists. Skipping addition.") # Use app.logger
                 else:
                     raise # Re-raise other unexpected operational errors
 
             conn.commit()
-            print("✅ Database initialization complete.")
+            app.logger.info("✅ Database initialization complete.") # Use app.logger
     except sqlite3.Error as e:
-        print(f"❌ Database initialization failed: {e}")
+        app.logger.error(f"❌ Database initialization failed: {e}", exc_info=True) # Log full traceback
+        # Note: If init_db fails, subsequent DB operations will also fail.
+        # Consider a more robust error handling for app startup if this is critical.
 
 # Initialize database on app startup
 init_db()
@@ -122,17 +128,16 @@ def diagnose(symptoms):
 def save_to_db(phone, symptoms, diagnosis, response, patient_name="Unknown"):
     """Safe database operation with context manager"""
     try:
-        # --- Already using DATABASE_PATH here, which is correct ---
         with sqlite3.connect(DATABASE_PATH) as conn:
             conn.execute('''INSERT INTO consultations
                             (phone, symptoms, diagnosis, response, patient_name)
                             VALUES (?, ?, ?, ?, ?)''',
                            (phone, symptoms, diagnosis, response, patient_name))
             last_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
-            print(f"💾 Saved consultation ID: {last_id}")
+            app.logger.info(f"💾 Saved consultation ID: {last_id}") # Use app.logger
             return True
     except sqlite3.Error as e:
-        print(f"❌ Database Error during save: {e}")
+        app.logger.error(f"❌ Database Error during save: {e}", exc_info=True) # Log full traceback
         return False
 
 @app.route("/whatsapp", methods=["POST"])
@@ -141,9 +146,9 @@ def whatsapp_reply():
     phone = request.values.get('From', '')
     incoming_msg = request.values.get('Body', '').strip()
 
-    print(f"\n=== INCOMING MESSAGE ===")
-    print(f"From: {phone}")
-    print(f"Content: '{incoming_msg}'") # Added quotes to see leading/trailing spaces
+    app.logger.info(f"\n=== INCOMING MESSAGE ===") # Use app.logger
+    app.logger.info(f"From: {phone}") # Use app.logger
+    app.logger.info(f"Content: '{incoming_msg}'") # Use app.logger
 
     # Prepare response
     resp = MessagingResponse()
@@ -157,7 +162,6 @@ def whatsapp_reply():
     elif "history" in incoming_msg.lower():
         # Feature: Retrieve last 3 consultations
         try:
-            # --- FIX: Use DATABASE_PATH environment variable here ---
             with sqlite3.connect(DATABASE_PATH) as conn:
                 history = conn.execute('''SELECT symptoms, diagnosis, timestamp, patient_name
                                          FROM consultations
@@ -172,7 +176,7 @@ def whatsapp_reply():
                     response_text = "No history found for this number."
         except sqlite3.Error as e:
             response_text = "⚠️ Could not retrieve history due to a database error."
-            print(f"History retrieval Error: {e}")
+            app.logger.error(f"History retrieval Error: {e}", exc_info=True) # Log full traceback
     else:
         # Get diagnosis
         diagnosis_name, diagnosis_response = diagnose(incoming_msg)
